@@ -1,0 +1,13 @@
+{
+  "name": "libros-abc-vanilla",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Biblioteca A–Z · Node http + JS vanilla · Cloud Run",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

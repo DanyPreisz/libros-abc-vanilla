@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Libros A–Z · Vanilla JS</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Outfit:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="page">
+      <p class="eyebrow">Node http · JS vanilla</p>
+      <h1>Biblioteca A–Z</h1>
+      <form id="add">
+        <input id="title" placeholder="Nombre del libro" required maxlength="120" />
+        <label class="check">
+          <input id="read" type="checkbox" />
+          Leído
+        </label>
+        <button type="submit">Agregar</button>
+      </form>
+      <div class="tabs" id="tabs" role="tablist"></div>
+      <section class="panel" id="panel"></section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

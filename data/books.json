@@ -1,0 +1,6 @@
+[
+  { "id": "b1", "title": "Alicia en el país de las maravillas", "read": true },
+  { "id": "b2", "title": "Cien años de soledad", "read": false },
+  { "id": "b3", "title": "Rayuela", "read": true },
+  { "id": "b4", "title": "El Aleph", "read": false }
+]
