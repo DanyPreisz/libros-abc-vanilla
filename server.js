@@ -8,8 +8,6 @@ const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, "public");
 const SEED = path.join(ROOT, "data", "books.json");
 const LOCAL_DB = process.env.DB_PATH || path.join("/tmp", "libros-abc.json");
-const GCS_BUCKET = process.env.GCS_BUCKET || "";
-const GCS_OBJECT = process.env.GCS_OBJECT || "books.json";
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -26,93 +24,106 @@ function seedBooks() {
   }
 }
 
-function gcsUrl(objectPath, query = "") {
-  const obj = encodeURIComponent(GCS_OBJECT);
-  return `https://storage.googleapis.com${objectPath}${obj}${query}`;
+async function projectId() {
+  if (process.env.GOOGLE_CLOUD_PROJECT) return process.env.GOOGLE_CLOUD_PROJECT;
+  if (process.env.GCP_PROJECT_ID) return process.env.GCP_PROJECT_ID;
+  if (process.env.GCLOUD_PROJECT) return process.env.GCLOUD_PROJECT;
+  try {
+    const res = await fetch(
+      "http://metadata.google.internal/computeMetadata/v1/project/project-id",
+      { headers: { "Metadata-Flavor": "Google" }, signal: AbortSignal.timeout(400) }
+    );
+    if (res.ok) return (await res.text()).trim();
+  } catch {}
+  return "";
 }
 
 async function accessToken() {
-  const url =
-    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
-  const res = await fetch(url, { headers: { "Metadata-Flavor": "Google" } });
-  if (!res.ok) throw new Error("metadata token " + res.status);
-  const data = await res.json();
-  return data.access_token;
-}
-
-async function gcsHeaders() {
-  const token = await accessToken();
-  return { Authorization: "Bearer " + token };
-}
-
-async function gcsGet() {
-  const headers = await gcsHeaders();
-  const metaRes = await fetch(
-    gcsUrl(`/storage/v1/b/${GCS_BUCKET}/o/`),
-    { headers }
-  );
-  if (metaRes.status === 404) return { books: seedBooks(), generation: "0" };
-  if (!metaRes.ok) throw new Error("gcs meta " + metaRes.status);
-  const meta = await metaRes.json();
-  const mediaRes = await fetch(
-    gcsUrl(`/storage/v1/b/${GCS_BUCKET}/o/`, "?alt=media"),
-    { headers }
-  );
-  if (mediaRes.status === 404) return { books: seedBooks(), generation: "0" };
-  if (!mediaRes.ok) throw new Error("gcs media " + mediaRes.status);
-  const books = JSON.parse(await mediaRes.text());
-  return { books: Array.isArray(books) ? books : [], generation: String(meta.generation) };
-}
-
-async function gcsPut(books, generation) {
-  const headers = await gcsHeaders();
-  const qs = new URLSearchParams({ uploadType: "media", name: GCS_OBJECT });
-  if (generation && generation !== "0") qs.set("ifGenerationMatch", generation);
   const res = await fetch(
-    `https://storage.googleapis.com/upload/storage/v1/b/${GCS_BUCKET}/o?` + qs,
-    {
-      method: "POST",
-      headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify(books, null, 2),
-    }
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+    { headers: { "Metadata-Flavor": "Google" } }
   );
-  if (res.status === 412) return false;
-  if (!res.ok) throw new Error("gcs put " + res.status + " " + (await res.text()));
+  if (!res.ok) throw new Error("metadata token " + res.status);
+  return (await res.json()).access_token;
+}
+
+function docsUrl(project, id = "") {
+  const base = `https://firestore.googleapis.com/v1/projects/${project}/databases/(default)/documents/books`;
+  return id ? `${base}/${encodeURIComponent(id)}` : base;
+}
+
+function fromDoc(doc) {
+  const id = String(doc.name || "").split("/").pop();
+  return {
+    id,
+    title: doc.fields?.title?.stringValue || "",
+    read: Boolean(doc.fields?.read?.booleanValue),
+  };
+}
+
+function toDoc(book) {
+  return {
+    fields: {
+      title: { stringValue: String(book.title || "") },
+      read: { booleanValue: Boolean(book.read) },
+    },
+  };
+}
+
+async function firestoreHeaders() {
+  return {
+    Authorization: "Bearer " + (await accessToken()),
+    "Content-Type": "application/json",
+  };
+}
+
+async function fsList(project) {
+  const res = await fetch(docsUrl(project) + "?pageSize=500", {
+    headers: await firestoreHeaders(),
+  });
+  if (res.status === 404) return [];
+  if (!res.ok) throw new Error("firestore list " + res.status + " " + (await res.text()));
+  const data = await res.json();
+  return (data.documents || []).map(fromDoc);
+}
+
+async function fsWrite(project, book) {
+  const res = await fetch(docsUrl(project, book.id), {
+    method: "PATCH",
+    headers: await firestoreHeaders(),
+    body: JSON.stringify(toDoc(book)),
+  });
+  if (!res.ok) throw new Error("firestore write " + res.status + " " + (await res.text()));
+  return fromDoc(await res.json());
+}
+
+async function fsSeedIfEmpty(project) {
+  const current = await fsList(project);
+  if (current.length) return current;
+  const seed = seedBooks();
+  await Promise.all(seed.map((book) => fsWrite(project, book)));
+  return seed;
+}
+
+async function fsDelete(project, id) {
+  const res = await fetch(docsUrl(project, id), {
+    method: "DELETE",
+    headers: await firestoreHeaders(),
+  });
+  if (res.status === 404) return false;
+  if (!res.ok) throw new Error("firestore delete " + res.status + " " + (await res.text()));
   return true;
 }
 
-function localGet() {
+function localRead() {
   try {
-    if (fs.existsSync(LOCAL_DB)) {
-      return { books: JSON.parse(fs.readFileSync(LOCAL_DB, "utf8")), generation: "1" };
-    }
+    if (fs.existsSync(LOCAL_DB)) return JSON.parse(fs.readFileSync(LOCAL_DB, "utf8"));
   } catch {}
-  return { books: seedBooks(), generation: "1" };
+  return seedBooks();
 }
 
-function localPut(books) {
+function localWrite(books) {
   fs.writeFileSync(LOCAL_DB, JSON.stringify(books, null, 2));
-  return true;
-}
-
-async function load() {
-  if (GCS_BUCKET) return gcsGet();
-  return localGet();
-}
-
-async function save(books, generation) {
-  if (GCS_BUCKET) return gcsPut(books, generation);
-  return localPut(books);
-}
-
-async function mutate(fn) {
-  for (let i = 0; i < 5; i += 1) {
-    const { books, generation } = await load();
-    const next = fn(books.slice());
-    const ok = await save(next, generation);
-    if (ok) return next;
-  }
-  throw new Error("gcs conflict");
 }
 
 function send(res, status, body, type = TYPES[".json"]) {
@@ -150,13 +161,15 @@ function sortBooks(list) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://localhost");
+    const project = await projectId();
+    const remote = Boolean(project);
 
     if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/healthz")) {
-      return send(res, 200, { ok: true, store: GCS_BUCKET ? "gcs" : "local" });
+      return send(res, 200, { ok: true, store: remote ? "firestore" : "local", project: project || null });
     }
 
     if (req.method === "GET" && url.pathname === "/api/books") {
-      const { books } = await load();
+      const books = remote ? await fsSeedIfEmpty(project) : localRead();
       return send(res, 200, sortBooks(books));
     }
 
@@ -165,39 +178,52 @@ const server = http.createServer(async (req, res) => {
       const title = String(data.title || "").trim().slice(0, 120);
       if (!title) return send(res, 400, { error: "vacío" });
       const book = { id: "b" + Date.now(), title, read: Boolean(data.read) };
-      await mutate((books) => {
+      if (remote) await fsWrite(project, book);
+      else {
+        const books = localRead();
         books.push(book);
-        return books;
-      });
+        localWrite(books);
+      }
       return send(res, 201, book);
     }
 
     const one = url.pathname.match(/^\/api\/books\/([^/]+)$/);
     if (one) {
+      const id = one[1];
       if (req.method === "PATCH") {
         const data = await body(req);
-        let updated = null;
-        await mutate((books) => {
-          const book = books.find((b) => b.id === one[1]);
-          if (!book) return books;
+        if (remote) {
+          const books = await fsList(project);
+          const book = books.find((b) => b.id === id);
+          if (!book) return send(res, 404, { error: "no" });
           if (data.read != null) book.read = Boolean(data.read);
           if (data.title != null) {
             const title = String(data.title).trim().slice(0, 120);
             if (title) book.title = title;
           }
-          updated = book;
-          return books;
-        });
-        return updated ? send(res, 200, updated) : send(res, 404, { error: "no" });
+          return send(res, 200, await fsWrite(project, book));
+        }
+        const books = localRead();
+        const book = books.find((b) => b.id === id);
+        if (!book) return send(res, 404, { error: "no" });
+        if (data.read != null) book.read = Boolean(data.read);
+        if (data.title != null) {
+          const title = String(data.title).trim().slice(0, 120);
+          if (title) book.title = title;
+        }
+        localWrite(books);
+        return send(res, 200, book);
       }
       if (req.method === "DELETE") {
-        let found = false;
-        await mutate((books) => {
-          const next = books.filter((b) => b.id !== one[1]);
-          found = next.length !== books.length;
-          return next;
-        });
-        return found ? send(res, 200, { ok: true }) : send(res, 404, { error: "no" });
+        if (remote) {
+          const ok = await fsDelete(project, id);
+          return ok ? send(res, 200, { ok: true }) : send(res, 404, { error: "no" });
+        }
+        const books = localRead();
+        const next = books.filter((b) => b.id !== id);
+        if (next.length === books.length) return send(res, 404, { error: "no" });
+        localWrite(next);
+        return send(res, 200, { ok: true });
       }
     }
 
@@ -211,5 +237,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`listening on http://${HOST}:${PORT} store=${GCS_BUCKET ? "gcs:" + GCS_BUCKET : "local"}`);
+  console.log(`listening on http://${HOST}:${PORT}`);
 });

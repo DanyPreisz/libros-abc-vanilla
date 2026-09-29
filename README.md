@@ -1,6 +1,6 @@
-# Biblioteca A–Z · Vanilla JS + Cloud Storage
+# Biblioteca A–Z · Vanilla JS + Firestore
 
-El UI no cambia. Cloud Run sirve la API y los estáticos. El JSON vive en un bucket.
+Misma UI. Misma API. Los libros viven en Firestore (`books/{id}`).
 
 ## Local
 
@@ -10,39 +10,35 @@ npm start
 
 http://localhost:8080 — usa `/tmp/libros-abc.json`.
 
-## Deploy automático
+## Deploy
 
-`deploy.sh` crea el bucket si no existe, da permiso a Cloud Run y despliega con `GCS_BUCKET`.
+`deploy.sh` habilita Firestore, crea la base `(default)` si no existe, da `datastore.user` a Cloud Run y despliega.
 
-### Una vez: secretos de GitHub
+### GitHub Actions (una vez)
 
 Repo → Settings → Secrets and variables → Actions:
 
 | Secret | Qué es |
 |---|---|
-| `GCP_PROJECT_ID` | ID del proyecto GCP (no el número) |
+| `GCP_PROJECT_ID` | ID del proyecto GCP |
 | `GCP_SA_KEY` | JSON de una service account |
 
-La service account necesita, como mínimo:
+Roles mínimos de esa cuenta:
 
 - `roles/run.admin`
 - `roles/iam.serviceAccountUser`
-- `roles/storage.admin`
+- `roles/datastore.owner` (para crear la base la primera vez)
 - `roles/cloudbuild.builds.editor`
 - `roles/artifactregistry.admin`
 
-Después, cada push a `main` corre [.github/workflows/deploy.yml](.github/workflows/deploy.yml).
-
-También se puede disparar a mano: Actions → Deploy Cloud Run → Run workflow.
-
-### A mano, misma cosa
+Push a `main` o Actions → Deploy Cloud Run → Run workflow.
 
 ```bash
 export GCP_PROJECT_ID=tu-proyecto
 bash deploy.sh
 ```
 
-Cuando terminó, `/health` tiene que decir `"store":"gcs"`.
+`/health` tiene que decir `"store":"firestore"`.
 
 ## API
 
@@ -50,4 +46,4 @@ Cuando terminó, `/health` tiene que decir `"store":"gcs"`.
 - `POST /api/books` `{ title, read }`
 - `PATCH /api/books/:id` `{ read }`
 - `DELETE /api/books/:id`
-- `GET /health` → `{ ok, store: "gcs" | "local" }`
+- `GET /health` → `{ ok, store: "firestore" | "local" }`
