@@ -34,8 +34,13 @@ gcloud run deploy "${SERVICE}" \
   --region "${REGION}" \
   --allow-unauthenticated \
   --quiet \
-  --set-env-vars="MONGODB_URI=${MONGODB_URI},MONGODB_DB=libros,MONGODB_COLLECTION=books" \
-  --remove-env-vars=GCS_BUCKET,GCS_OBJECT,GOOGLE_CLOUD_PROJECT
+  --update-env-vars="MONGODB_URI=${MONGODB_URI},MONGODB_DB=libros,MONGODB_COLLECTION=books"
+
+gcloud run services update "${SERVICE}" \
+  --project "${PROJECT}" \
+  --region "${REGION}" \
+  --quiet \
+  --remove-env-vars=GCS_BUCKET,GCS_OBJECT,GOOGLE_CLOUD_PROJECT || true
 
 URL="$(gcloud run services describe "${SERVICE}" \
   --project "${PROJECT}" \
