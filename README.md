@@ -1,8 +1,8 @@
 # Biblioteca A–Z · Vanilla JS + Cloud Storage
 
-El UI no cambia. Cloud Run solo sirve la API y los estáticos. El JSON vive en un bucket.
+El UI no cambia. Cloud Run sirve la API y los estáticos. El JSON vive en un bucket.
 
-## Local (sin bucket)
+## Local
 
 ```bash
 npm start
@@ -10,45 +10,44 @@ npm start
 
 http://localhost:8080 — usa `/tmp/libros-abc.json`.
 
-## Persistencia real (Cloud Storage)
+## Deploy automático
+
+`deploy.sh` crea el bucket si no existe, da permiso a Cloud Run y despliega con `GCS_BUCKET`.
+
+### Una vez: secretos de GitHub
+
+Repo → Settings → Secrets and variables → Actions:
+
+| Secret | Qué es |
+|---|---|
+| `GCP_PROJECT_ID` | ID del proyecto GCP (no el número) |
+| `GCP_SA_KEY` | JSON de una service account |
+
+La service account necesita, como mínimo:
+
+- `roles/run.admin`
+- `roles/iam.serviceAccountUser`
+- `roles/storage.admin`
+- `roles/cloudbuild.builds.editor`
+- `roles/artifactregistry.admin`
+
+Después, cada push a `main` corre [.github/workflows/deploy.yml](.github/workflows/deploy.yml).
+
+También se puede disparar a mano: Actions → Deploy Cloud Run → Run workflow.
+
+### A mano, misma cosa
 
 ```bash
-PROJECT=$(gcloud config get-value project)
-REGION=europe-west1
-BUCKET=$PROJECT-libros-abc
-
-# 1. Bucket
-gcloud storage buckets create gs://$BUCKET --location=$REGION --uniform-bucket-level-access
-
-# 2. Que Cloud Run pueda leer/escribir el JSON
-# Si el servicio ya existe, usá la SA que muestra:
-#   gcloud run services describe libros-abc-vanilla --region $REGION --format='value(spec.template.spec.serviceAccountName)'
-PROJECT_NUMBER=$(gcloud projects describe $PROJECT --format='value(projectNumber)')
-COMPUTE_SA=$PROJECT_NUMBER-compute@developer.gserviceaccount.com
-
-gcloud storage buckets add-iam-policy-binding gs://$BUCKET \
-  --member="serviceAccount:$COMPUTE_SA" \
-  --role=roles/storage.objectAdmin
-
-# 3. Redesplegar con el bucket
-gcloud run deploy libros-abc-vanilla \
-  --source . \
-  --region $REGION \
-  --allow-unauthenticated \
-  --set-env-vars=GCS_BUCKET=$BUCKET,GCS_OBJECT=books.json
+export GCP_PROJECT_ID=tu-proyecto
+bash deploy.sh
 ```
 
-La primera escritura crea `gs://$BUCKET/books.json`. Si el objeto no existe, se copia el seed de `data/books.json`.
+Cuando terminó, `/health` tiene que decir `"store":"gcs"`.
 
-## API (igual)
+## API
 
 - `GET /api/books`
 - `POST /api/books` `{ title, read }`
 - `PATCH /api/books/:id` `{ read }`
 - `DELETE /api/books/:id`
 - `GET /health` → `{ ok, store: "gcs" | "local" }`
-
-## Por qué ahora sí persiste
-
-Cloud Run borra el disco del contenedor al apagarse. El archivo en el bucket no.
-Las escrituras usan `ifGenerationMatch` para no pisarse si hay más de una instancia.
