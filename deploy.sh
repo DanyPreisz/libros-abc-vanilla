@@ -26,7 +26,29 @@ gcloud services enable \
   run.googleapis.com \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
+  storage.googleapis.com \
   --project "${PROJECT}"
+
+PROJECT_NUMBER="$(gcloud projects describe "${PROJECT}" --format='value(projectNumber)')"
+COMPUTE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+BUILD_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
+
+grant() {
+  local member="$1"
+  local role="$2"
+  gcloud projects add-iam-policy-binding "${PROJECT}" \
+    --member="serviceAccount:${member}" \
+    --role="${role}" \
+    --quiet >/dev/null || true
+  echo "iam ${member} ${role}"
+}
+
+grant "${COMPUTE_SA}" roles/storage.objectAdmin
+grant "${COMPUTE_SA}" roles/artifactregistry.writer
+grant "${COMPUTE_SA}" roles/logging.logWriter
+grant "${BUILD_SA}" roles/storage.objectAdmin
+grant "${BUILD_SA}" roles/artifactregistry.writer
+grant "${BUILD_SA}" roles/run.admin
 
 gcloud run deploy "${SERVICE}" \
   --project "${PROJECT}" \
