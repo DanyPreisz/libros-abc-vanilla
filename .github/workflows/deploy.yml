@@ -26,7 +26,8 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - name: Bucket + IAM + Cloud Run
+      - name: Cloud Run + MongoDB Atlas
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
         run: bash deploy.sh

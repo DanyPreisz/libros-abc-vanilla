@@ -1,13 +1,16 @@
 {
   "name": "libros-abc-vanilla",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
-  "description": "Biblioteca A–Z · Node http + JS vanilla · Cloud Run",
+  "description": "Biblioteca A–Z · Node http + JS vanilla · MongoDB Atlas",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "mongodb": "^6.19.0"
   }
 }

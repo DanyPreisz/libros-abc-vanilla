@@ -8,6 +8,9 @@ const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, "public");
 const SEED = path.join(ROOT, "data", "books.json");
 const LOCAL_DB = process.env.DB_PATH || path.join("/tmp", "libros-abc.json");
+const MONGO_URI = process.env.MONGODB_URI || "";
+const MONGO_DB = process.env.MONGODB_DB || "libros";
+const MONGO_COL = process.env.MONGODB_COLLECTION || "books";
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -24,95 +27,28 @@ function seedBooks() {
   }
 }
 
-async function projectId() {
-  if (process.env.GOOGLE_CLOUD_PROJECT) return process.env.GOOGLE_CLOUD_PROJECT;
-  if (process.env.GCP_PROJECT_ID) return process.env.GCP_PROJECT_ID;
-  if (process.env.GCLOUD_PROJECT) return process.env.GCLOUD_PROJECT;
-  try {
-    const res = await fetch(
-      "http://metadata.google.internal/computeMetadata/v1/project/project-id",
-      { headers: { "Metadata-Flavor": "Google" }, signal: AbortSignal.timeout(400) }
-    );
-    if (res.ok) return (await res.text()).trim();
-  } catch {}
-  return "";
+let colPromise = null;
+
+async function collection() {
+  if (!MONGO_URI) return null;
+  if (!colPromise) {
+    colPromise = (async () => {
+      const { MongoClient } = require("mongodb");
+      const client = new MongoClient(MONGO_URI);
+      await client.connect();
+      const col = client.db(MONGO_DB).collection(MONGO_COL);
+      if ((await col.countDocuments()) === 0) {
+        const seed = seedBooks();
+        if (seed.length) await col.insertMany(seed);
+      }
+      return col;
+    })();
+  }
+  return colPromise;
 }
 
-async function accessToken() {
-  const res = await fetch(
-    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
-    { headers: { "Metadata-Flavor": "Google" } }
-  );
-  if (!res.ok) throw new Error("metadata token " + res.status);
-  return (await res.json()).access_token;
-}
-
-function docsUrl(project, id = "") {
-  const base = `https://firestore.googleapis.com/v1/projects/${project}/databases/(default)/documents/books`;
-  return id ? `${base}/${encodeURIComponent(id)}` : base;
-}
-
-function fromDoc(doc) {
-  const id = String(doc.name || "").split("/").pop();
-  return {
-    id,
-    title: doc.fields?.title?.stringValue || "",
-    read: Boolean(doc.fields?.read?.booleanValue),
-  };
-}
-
-function toDoc(book) {
-  return {
-    fields: {
-      title: { stringValue: String(book.title || "") },
-      read: { booleanValue: Boolean(book.read) },
-    },
-  };
-}
-
-async function firestoreHeaders() {
-  return {
-    Authorization: "Bearer " + (await accessToken()),
-    "Content-Type": "application/json",
-  };
-}
-
-async function fsList(project) {
-  const res = await fetch(docsUrl(project) + "?pageSize=500", {
-    headers: await firestoreHeaders(),
-  });
-  if (res.status === 404) return [];
-  if (!res.ok) throw new Error("firestore list " + res.status + " " + (await res.text()));
-  const data = await res.json();
-  return (data.documents || []).map(fromDoc);
-}
-
-async function fsWrite(project, book) {
-  const res = await fetch(docsUrl(project, book.id), {
-    method: "PATCH",
-    headers: await firestoreHeaders(),
-    body: JSON.stringify(toDoc(book)),
-  });
-  if (!res.ok) throw new Error("firestore write " + res.status + " " + (await res.text()));
-  return fromDoc(await res.json());
-}
-
-async function fsSeedIfEmpty(project) {
-  const current = await fsList(project);
-  if (current.length) return current;
-  const seed = seedBooks();
-  await Promise.all(seed.map((book) => fsWrite(project, book)));
-  return seed;
-}
-
-async function fsDelete(project, id) {
-  const res = await fetch(docsUrl(project, id), {
-    method: "DELETE",
-    headers: await firestoreHeaders(),
-  });
-  if (res.status === 404) return false;
-  if (!res.ok) throw new Error("firestore delete " + res.status + " " + (await res.text()));
-  return true;
+function publicBook(doc) {
+  return { id: doc.id, title: doc.title, read: Boolean(doc.read) };
 }
 
 function localRead() {
@@ -161,15 +97,16 @@ function sortBooks(list) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://localhost");
-    const project = await projectId();
-    const remote = Boolean(project);
+    const col = await collection();
 
     if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/healthz")) {
-      return send(res, 200, { ok: true, store: remote ? "firestore" : "local", project: project || null });
+      return send(res, 200, { ok: true, store: col ? "mongodb" : "local" });
     }
 
     if (req.method === "GET" && url.pathname === "/api/books") {
-      const books = remote ? await fsSeedIfEmpty(project) : localRead();
+      const books = col
+        ? (await col.find({}, { projection: { _id: 0 } }).toArray()).map(publicBook)
+        : localRead();
       return send(res, 200, sortBooks(books));
     }
 
@@ -178,7 +115,7 @@ const server = http.createServer(async (req, res) => {
       const title = String(data.title || "").trim().slice(0, 120);
       if (!title) return send(res, 400, { error: "vacío" });
       const book = { id: "b" + Date.now(), title, read: Boolean(data.read) };
-      if (remote) await fsWrite(project, book);
+      if (col) await col.insertOne({ ...book });
       else {
         const books = localRead();
         books.push(book);
@@ -192,32 +129,35 @@ const server = http.createServer(async (req, res) => {
       const id = one[1];
       if (req.method === "PATCH") {
         const data = await body(req);
-        if (remote) {
-          const books = await fsList(project);
-          const book = books.find((b) => b.id === id);
-          if (!book) return send(res, 404, { error: "no" });
-          if (data.read != null) book.read = Boolean(data.read);
-          if (data.title != null) {
-            const title = String(data.title).trim().slice(0, 120);
-            if (title) book.title = title;
-          }
-          return send(res, 200, await fsWrite(project, book));
+        const patch = {};
+        if (data.read != null) patch.read = Boolean(data.read);
+        if (data.title != null) {
+          const title = String(data.title).trim().slice(0, 120);
+          if (title) patch.title = title;
+        }
+        if (col) {
+          const out = await col.findOneAndUpdate(
+            { id },
+            { $set: patch },
+            { returnDocument: "after" }
+          );
+          const doc = out && out.value ? out.value : out;
+          if (!doc || !doc.id) return send(res, 404, { error: "no" });
+          return send(res, 200, publicBook(doc));
         }
         const books = localRead();
         const book = books.find((b) => b.id === id);
         if (!book) return send(res, 404, { error: "no" });
-        if (data.read != null) book.read = Boolean(data.read);
-        if (data.title != null) {
-          const title = String(data.title).trim().slice(0, 120);
-          if (title) book.title = title;
-        }
+        Object.assign(book, patch);
         localWrite(books);
         return send(res, 200, book);
       }
       if (req.method === "DELETE") {
-        if (remote) {
-          const ok = await fsDelete(project, id);
-          return ok ? send(res, 200, { ok: true }) : send(res, 404, { error: "no" });
+        if (col) {
+          const out = await col.deleteOne({ id });
+          return out.deletedCount
+            ? send(res, 200, { ok: true })
+            : send(res, 404, { error: "no" });
         }
         const books = localRead();
         const next = books.filter((b) => b.id !== id);
@@ -237,5 +177,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`listening on http://${HOST}:${PORT}`);
+  console.log(`listening on http://${HOST}:${PORT} store=${MONGO_URI ? "mongodb" : "local"}`);
 });

@@ -1,44 +1,49 @@
-# Biblioteca A–Z · Vanilla JS + Firestore
+# Biblioteca A–Z · Vanilla JS + MongoDB Atlas
 
-Misma UI. Misma API. Los libros viven en Firestore (`books/{id}`).
+Misma UI. Misma API. Los libros viven en Atlas (`libros.books`).
 
 ## Local
 
+Sin Atlas:
+
 ```bash
+npm install
 npm start
 ```
 
 http://localhost:8080 — usa `/tmp/libros-abc.json`.
 
-## Deploy
+Con Atlas:
 
-`deploy.sh` habilita Firestore, crea la base `(default)` si no existe, da `datastore.user` a Cloud Run y despliega.
+```bash
+export MONGODB_URI="mongodb+srv://USER:PASS@CLUSTER.mongodb.net/libros?retryWrites=true&w=majority"
+npm start
+```
 
-### GitHub Actions (una vez)
+## Atlas (una vez)
 
-Repo → Settings → Secrets and variables → Actions:
+1. https://cloud.mongodb.com → crear proyecto + cluster **M0 Free**.
+2. Database Access → usuario con rol `readWrite`.
+3. Network Access → `0.0.0.0/0` (Cloud Run no tiene IP fija).
+4. Connect → Drivers → copiar la URI.
+
+## Deploy a Cloud Run
+
+Secretos de GitHub:
 
 | Secret | Qué es |
 |---|---|
-| `GCP_PROJECT_ID` | ID del proyecto GCP |
-| `GCP_SA_KEY` | JSON de una service account |
-
-Roles mínimos de esa cuenta:
-
-- `roles/run.admin`
-- `roles/iam.serviceAccountUser`
-- `roles/datastore.owner` (para crear la base la primera vez)
-- `roles/cloudbuild.builds.editor`
-- `roles/artifactregistry.admin`
-
-Push a `main` o Actions → Deploy Cloud Run → Run workflow.
+| `GCP_PROJECT_ID` | ID del proyecto GCP del Cloud Run |
+| `GCP_SA_KEY` | JSON de una SA con permiso de deploy |
+| `MONGODB_URI` | connection string de Atlas |
 
 ```bash
-export GCP_PROJECT_ID=tu-proyecto
+export GCP_PROJECT_ID=tu-proyecto-gcp
+export MONGODB_URI="mongodb+srv://..."
 bash deploy.sh
 ```
 
-`/health` tiene que decir `"store":"firestore"`.
+`/health` tiene que decir `"store":"mongodb"`.
 
 ## API
 
@@ -46,4 +51,4 @@ bash deploy.sh
 - `POST /api/books` `{ title, read }`
 - `PATCH /api/books/:id` `{ read }`
 - `DELETE /api/books/:id`
-- `GET /health` → `{ ok, store: "firestore" | "local" }`
+- `GET /health` → `{ ok, store: "mongodb" | "local" }`
